@@ -77,6 +77,36 @@ def get_scanned_log_path(env_name: str) -> Path:
     return get_env_data_dir(env_name) / "scanned_logs.json"
 
 
+def get_env_settings_path(env_name: str) -> Path:
+    return get_env_data_dir(env_name) / "env_settings.json"
+
+
+def load_env_settings(env_name: str) -> dict:
+    p = get_env_settings_path(env_name)
+    if p.exists():
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def save_env_settings(env_name: str, data: dict):
+    get_env_settings_path(env_name).write_text(
+        json.dumps(data, indent=2), encoding="utf-8"
+    )
+
+
+def get_bp_pattern(env_name: str) -> str:
+    """Return the BP extraction regex for this env.
+    Writes DEFAULT_BP_PATTERN to env_settings.json on first run."""
+    s = load_env_settings(env_name)
+    if "bp_pattern" not in s:
+        s["bp_pattern"] = DEFAULT_BP_PATTERN
+        save_env_settings(env_name, s)
+    return s["bp_pattern"]
+
+
 # ── Settings ─────────────────────────────────────────────────────────────────
 
 def load_settings() -> dict:
@@ -129,30 +159,38 @@ def save_scanned_logs(env_name: str, data: dict):
 
 # ── Log parsing ───────────────────────────────────────────────────────────────
 
-BP_PATTERN = re.compile(r"Received Blueprint:\s+(.+?):\s")
+DEFAULT_BP_PATTERN = r"Received Blueprint:\s+(.+?):\s"
 
 
-def extract_blueprints_from_text(text: str) -> set:
-    return {bp.strip() for bp in BP_PATTERN.findall(text)}
+def compile_bp_pattern(pattern_str: str) -> re.Pattern:
+    """Compile a BP extraction pattern, falling back to default on error."""
+    try:
+        return re.compile(pattern_str)
+    except re.error:
+        return re.compile(DEFAULT_BP_PATTERN)
 
 
-def scan_log_file(path: Path) -> set:
+def extract_blueprints_from_text(text: str, pattern: re.Pattern) -> set:
+    return {bp.strip() for bp in pattern.findall(text)}
+
+
+def scan_log_file(path: Path, pattern: re.Pattern) -> set:
     """Read entire file, return found blueprints."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
-        return extract_blueprints_from_text(text)
+        return extract_blueprints_from_text(text, pattern)
     except Exception:
         return set()
 
 
-def scan_log_file_from_offset(path: Path, offset: int) -> tuple[set, int]:
+def scan_log_file_from_offset(path: Path, offset: int, pattern: re.Pattern) -> tuple[set, int]:
     """Read file from byte offset, return (blueprints, new_offset)."""
     try:
         with open(path, "rb") as f:
             f.seek(offset)
             data = f.read()
         text = data.decode("utf-8", errors="replace")
-        bps = extract_blueprints_from_text(text)
+        bps = extract_blueprints_from_text(text, pattern)
         new_offset = offset + len(data)
         return bps, new_offset
     except Exception:
@@ -509,6 +547,7 @@ class ScanWorker(QObject):
         self.env_path = env_path
         self.env_name = env_name
         self.template = template
+        self._bp_pattern = compile_bp_pattern(get_bp_pattern(env_name))
         self._game_log_offset = 0
 
     @Slot()
@@ -538,7 +577,7 @@ class ScanWorker(QObject):
                 prev = scanned.get(key)
                 if prev and prev.get("size") == stat.st_size and prev.get("mtime") == stat.st_mtime:
                     continue
-                found = scan_log_file(lf)
+                found = scan_log_file(lf, self._bp_pattern)
                 new_bps_found |= found - bps
                 bps |= found
                 scanned[key] = {"size": stat.st_size, "mtime": stat.st_mtime}
@@ -549,7 +588,7 @@ class ScanWorker(QObject):
 
         game_log = self.env_path / "Game.log"
         if game_log.exists():
-            found, self._game_log_offset = scan_log_file_from_offset(game_log, 0)
+            found, self._game_log_offset = scan_log_file_from_offset(game_log, 0, self._bp_pattern)
             new_bps_found |= found - bps
             bps |= found
             self.log_message.emit(f"  📄 Game.log: found {len(found)} BPs (initial read)")
@@ -591,7 +630,7 @@ class ScanWorker(QObject):
             return
 
         bps = load_blueprints(self.env_name)
-        found, new_offset = scan_log_file_from_offset(game_log, self._game_log_offset)
+        found, new_offset = scan_log_file_from_offset(game_log, self._game_log_offset, self._bp_pattern)
         self._game_log_offset = new_offset
 
         new_bps = found - bps
