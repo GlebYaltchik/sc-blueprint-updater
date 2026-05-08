@@ -169,12 +169,32 @@ DEFAULT_INI_URL = (
     "/Data/Localization/english/global.ini"
 )
 
+def get_language(env_path: Path) -> str:
+    """
+    Read g_language from user.cfg in env root.
+    Falls back to 'english' if the file is absent or the key is missing.
+    Handles both bare values and quoted values, e.g.:
+        g_language = german
+        g_language = "german"
+    """
+    user_cfg = env_path / "user.cfg"
+    if user_cfg.exists():
+        try:
+            for line in user_cfg.read_text(encoding="utf-8", errors="replace").splitlines():
+                m = re.match(r"^\s*g_language\s*=\s*(\S+)", line, re.IGNORECASE)
+                if m:
+                    return m.group(1).strip()
+        except Exception:
+            pass
+    return "english"
+
+
 def get_ini_path(env_path: Path) -> Path:
-    return env_path / "data" / "Localization" / "english" / "global.ini"
+    return env_path / "data" / "Localization" / get_language(env_path) / "global.ini"
 
 
 def get_ini_backup_path(env_path: Path) -> Path:
-    return env_path / "data" / "Localization" / "english" / "global.ini.original"
+    return env_path / "data" / "Localization" / get_language(env_path) / "global.ini.original"
 
 
 def matches_filter(name: str, pattern: str) -> bool:
@@ -973,6 +993,10 @@ class SetupPage(QWidget):
         game_log = env_path / "Game.log"
 
         lines.append("<b>SC installation:</b> ✅ valid")
+
+        lang = get_language(env_path)
+        lang_source = "user.cfg" if (env_path / "user.cfg").exists() else "default"
+        lines.append(f"<b>Language:</b> {lang} ({lang_source})")
 
         if ini_path.exists():
             lines.append("<b>global.ini:</b> ✅ found")
