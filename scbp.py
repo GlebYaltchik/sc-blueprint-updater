@@ -258,7 +258,6 @@ def is_valid_sc_env(env_path: Path) -> bool:
     """Return True if env_path looks like a valid Star Citizen installation directory."""
     return (
         (env_path / "Bin64").is_dir()
-        and (env_path / "data").is_dir()
         and (env_path / "Data.p4k").is_file()
     )
 
@@ -1015,7 +1014,7 @@ class SetupPage(QWidget):
 
         if not valid_env:
             lines.append(
-                "<b>SC installation:</b> ❌ Bin64/, data/ or Data.p4k not found"
+                "<b>SC installation:</b> ❌ Bin64/ or Data.p4k not found"
             )
             lines.append(
                 "<br>This folder does not look like a Star Citizen environment. "
@@ -1065,7 +1064,7 @@ class SetupPage(QWidget):
             QMessageBox.warning(
                 self, "Not a valid SC environment",
                 "The selected folder does not appear to be a Star Citizen environment.\n\n"
-                "Required files/dirs: Bin64\\, data\\, Data.p4k\n\n"
+                "Required: Bin64\\ directory and Data.p4k file\n\n"
                 "Star Citizen is typically installed at:\n"
                 "C:\\Program Files\\Roberts Space Industries\\StarCitizen\\\n\n"
                 "Select that folder as the root directory, then choose "
