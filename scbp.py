@@ -177,6 +177,25 @@ def get_ini_backup_path(env_path: Path) -> Path:
     return env_path / "data" / "Localization" / "english" / "global.ini.original"
 
 
+def matches_filter(name: str, pattern: str) -> bool:
+    """
+    Glob-style substring match.
+    '*' is a wildcard; parts between '*' must appear in order.
+    No '*' → simple case-insensitive substring match.
+    """
+    if not pattern:
+        return True
+    name_l = name.lower()
+    parts = pattern.lower().split("*")
+    pos = 0
+    for part in parts:
+        idx = name_l.find(part, pos)
+        if idx == -1:
+            return False
+        pos = idx + len(part)
+    return True
+
+
 def is_valid_sc_env(env_path: Path) -> bool:
     """Return True if env_path looks like a valid Star Citizen installation directory."""
     return (
@@ -1041,6 +1060,7 @@ class MonitorPage(QWidget):
         self._poll_timer: QTimer | None = None
         self._countdown_timer: QTimer | None = None
         self._seconds_left = 60
+        self._all_bps: list[str] = []
         self._build_ui()
 
     def _build_ui(self):
@@ -1107,6 +1127,7 @@ class MonitorPage(QWidget):
 
         self._filter_edit = QLineEdit()
         self._filter_edit.setPlaceholderText("Filter…")
+        self._filter_edit.textChanged.connect(self._apply_filter)
         bp_layout.addWidget(self._filter_edit)
 
         # Right: log
@@ -1222,10 +1243,33 @@ class MonitorPage(QWidget):
         sb.setValue(sb.maximum())
 
     def _update_bp_list(self, bps: set):
+        self._all_bps = sorted(bps)
+        self._apply_filter()
+
+    def _apply_filter(self):
+        pattern = self._filter_edit.text()
+        total = len(self._all_bps)
+
+        visible = (
+            [bp for bp in self._all_bps if matches_filter(bp, pattern)]
+            if pattern else self._all_bps
+        )
+
         self._bp_list.clear()
-        for bp in sorted(bps):
+        for bp in visible:
             self._bp_list.addItem(bp)
-        self._bp_count_label.setText(f"Blueprints ({len(bps)})")
+
+        filtered_out = total - len(visible)
+        if filtered_out > 0:
+            noun = "blueprint" if filtered_out == 1 else "blueprints"
+            footer = QListWidgetItem(f"*** {filtered_out} {noun} filtered out ***")
+            footer.setFlags(Qt.NoItemFlags)
+            footer.setForeground(QColor("#585b70"))
+            footer.setTextAlignment(Qt.AlignCenter)
+            self._bp_list.addItem(footer)
+
+        label = f"Blueprints ({len(visible)}/{total})" if pattern else f"Blueprints ({total})"
+        self._bp_count_label.setText(label)
 
     def _on_ini_updated(self, changed: int, replacements: int):
         self._append_log(
