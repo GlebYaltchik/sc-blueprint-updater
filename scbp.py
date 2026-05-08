@@ -1050,6 +1050,7 @@ class SetupPage(QWidget):
 class MonitorPage(QWidget):
     """Page 2: active monitoring view."""
     stop_requested = Signal()
+    status_changed = Signal(str, str)  # (text, css_color)
 
     def __init__(self):
         super().__init__()
@@ -1092,11 +1093,6 @@ class MonitorPage(QWidget):
         header.addWidget(self._btn_restore)
         header.addWidget(btn_stop)
         layout.addLayout(header)
-
-        # Status indicator
-        self._status_label = QLabel("● Idle")
-        self._status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
-        layout.addWidget(self._status_label)
 
         # Splitter: blueprint list | log
         splitter = QSplitter(Qt.Horizontal)
@@ -1230,12 +1226,10 @@ class MonitorPage(QWidget):
         self.stop_requested.emit()
 
     def _set_status_active(self):
-        self._status_label.setText("● Monitoring — next scan in 60s")
-        self._status_label.setStyleSheet("color: #a6e3a1; font-weight: bold;")
+        self.status_changed.emit("● Monitoring — next scan in 60s", "#a6e3a1")
 
     def _set_status_idle(self):
-        self._status_label.setText("● Idle")
-        self._status_label.setStyleSheet("color: #a6adc8; font-weight: bold;")
+        self.status_changed.emit("● Idle", "#a6adc8")
 
     def _on_poll_tick(self):
         """Called every 60 s in main thread; delegates work to the worker thread."""
@@ -1245,7 +1239,7 @@ class MonitorPage(QWidget):
 
     def _on_countdown_tick(self):
         self._seconds_left = max(0, self._seconds_left - 1)
-        self._status_label.setText(f"● Monitoring — next scan in {self._seconds_left}s")
+        self.status_changed.emit(f"● Monitoring — next scan in {self._seconds_left}s", "#a6e3a1")
 
     def _append_log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
@@ -1349,14 +1343,25 @@ class MainWindow(QMainWindow):
 
         self._setup_page.env_selected.connect(self._on_env_selected)
         self._monitor_page.stop_requested.connect(self._on_back_to_setup)
+        self._monitor_page.status_changed.connect(self._on_monitor_status)
 
         status = QStatusBar()
         self.setStatusBar(status)
         status.showMessage("Ready")
 
+        self._status_indicator = QLabel("")
+        self._status_indicator.setStyleSheet("font-weight: bold; padding: 0 8px;")
+        status.addPermanentWidget(self._status_indicator)
+
         # Restore settings
         settings = load_settings()
         self._setup_page.restore_settings(settings)
+
+    def _on_monitor_status(self, text: str, color: str):
+        self._status_indicator.setText(text)
+        self._status_indicator.setStyleSheet(
+            f"color: {color}; font-weight: bold; padding: 0 8px;"
+        )
 
     def _on_env_selected(self, env_path: Path, env_name: str, template: str):
         self._monitor_page.start_monitoring(env_path, env_name, template)
@@ -1364,6 +1369,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Monitoring: {env_name}")
 
     def _on_back_to_setup(self):
+        self._status_indicator.setText("")
         self._stack.setCurrentWidget(self._setup_page)
         self.statusBar().showMessage("Ready")
         # Refresh env info if same env is selected
