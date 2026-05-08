@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QFileDialog, QListWidget, QListWidgetItem,
     QTextEdit, QGroupBox, QSplitter, QStatusBar, QFrame, QStackedWidget,
-    QSizePolicy, QScrollArea, QMessageBox
+    QSizePolicy, QScrollArea, QMessageBox, QDialog, QProgressBar, QLineEdit
 )
 from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, QMetaObject, Slot
 from PySide6.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor
@@ -164,6 +164,10 @@ def scan_log_file_from_offset(path: Path, offset: int) -> tuple[set, int]:
 _ini_lock = threading.Lock()  # prevents concurrent writes to global.ini
 
 DEFAULT_TEMPLATE = "$NAME [+]"
+DEFAULT_INI_URL = (
+    "https://raw.githubusercontent.com/MrKraken/StarStrings/master"
+    "/Data/Localization/english/global.ini"
+)
 
 def get_ini_path(env_path: Path) -> Path:
     return env_path / "data" / "Localization" / "english" / "global.ini"
@@ -171,6 +175,15 @@ def get_ini_path(env_path: Path) -> Path:
 
 def get_ini_backup_path(env_path: Path) -> Path:
     return env_path / "data" / "Localization" / "english" / "global.ini.original"
+
+
+def is_valid_sc_env(env_path: Path) -> bool:
+    """Return True if env_path looks like a valid Star Citizen installation directory."""
+    return (
+        (env_path / "Bin64").is_dir()
+        and (env_path / "data").is_dir()
+        and (env_path / "Data.p4k").is_file()
+    )
 
 
 def parse_template(template: str) -> tuple[str, str]:
@@ -308,6 +321,138 @@ def restore_ini_from_backup(env_path: Path) -> bool:
         shutil.copy2(str(backup_path), str(ini_path))
         return True
     return False
+
+
+# ── Download worker & dialog ──────────────────────────────────────────────────
+
+class DownloadWorker(QObject):
+    """Downloads a file from a URL or copies from a local path in a background thread."""
+    progress = Signal(int, int)   # (bytes_downloaded, total_bytes)
+    finished = Signal(bool, str)  # (success, error_message)
+
+    def __init__(self, source: str, dest: Path):
+        super().__init__()
+        self._source = source
+        self._dest = dest
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    @Slot()
+    def run(self):
+        try:
+            self._run_impl()
+        except InterruptedError:
+            self.finished.emit(False, "Cancelled")
+        except Exception:
+            self.finished.emit(False, traceback.format_exc())
+
+    def _run_impl(self):
+        source = self._source
+        dest = self._dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        if source.startswith("http://") or source.startswith("https://"):
+            import urllib.request
+            tmp = dest.parent / (dest.name + ".downloading")
+            try:
+                with urllib.request.urlopen(source) as resp:
+                    total = int(resp.headers.get("Content-Length") or 0)
+                    downloaded = 0
+                    with open(tmp, "wb") as f:
+                        while True:
+                            if self._cancelled:
+                                raise InterruptedError
+                            chunk = resp.read(65536)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            self.progress.emit(downloaded, total)
+                import shutil
+                shutil.move(str(tmp), str(dest))
+            except Exception:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
+        else:
+            import shutil
+            shutil.copy2(source, str(dest))
+            size = dest.stat().st_size
+            self.progress.emit(size, size)
+
+        self.finished.emit(True, "")
+
+
+class DownloadProgressDialog(QDialog):
+    """Modal dialog that downloads or copies global.ini and shows progress."""
+
+    def __init__(self, source: str, dest: Path, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Downloading global.ini")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        src_label = QLabel(f"<b>Source:</b> {source}")
+        src_label.setWordWrap(True)
+        src_label.setObjectName("subtitle")
+        layout.addWidget(src_label)
+
+        self._status = QLabel("Connecting…")
+        layout.addWidget(self._status)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 0)  # indeterminate until Content-Length is known
+        layout.addWidget(self._bar)
+
+        self._btn_cancel = QPushButton("Cancel")
+        self._btn_cancel.clicked.connect(self._cancel)
+        layout.addWidget(self._btn_cancel, alignment=Qt.AlignRight)
+
+        self._thread = QThread()
+        self._worker = DownloadWorker(source, dest)
+        self._worker.moveToThread(self._thread)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.finished.connect(self._on_finished)
+        self._thread.started.connect(self._worker.run)
+        self._thread.start()
+
+    def _on_progress(self, downloaded: int, total: int):
+        if total > 0:
+            self._bar.setRange(0, total)
+            self._bar.setValue(downloaded)
+            self._status.setText(
+                f"Downloaded {downloaded / 1048576:.1f} MB of {total / 1048576:.1f} MB"
+            )
+        else:
+            self._status.setText(f"Downloaded {downloaded / 1048576:.1f} MB…")
+
+    def _on_finished(self, success: bool, error: str):
+        self._thread.quit()
+        self._thread.wait()
+        if success:
+            self._status.setText("Done!")
+            self.accept()
+        elif error == "Cancelled":
+            self.reject()
+        else:
+            QMessageBox.critical(
+                self, "Download Failed",
+                f"Could not fetch global.ini:\n\n{error}"
+            )
+            self.reject()
+
+    def _cancel(self):
+        self._worker.cancel()
+        self._btn_cancel.setEnabled(False)
+        self._status.setText("Cancelling…")
 
 
 # ── Worker thread ─────────────────────────────────────────────────────────────
@@ -667,7 +812,6 @@ class SetupPage(QWidget):
         tpl_layout.addWidget(tpl_note)
 
         tpl_row = QHBoxLayout()
-        from PySide6.QtWidgets import QLineEdit
         self._tpl_edit = QLineEdit()
         self._tpl_edit.setPlaceholderText("e.g.  $NAME [+]  or  <EM2>$NAME</EM2>")
         self._tpl_edit.setText(DEFAULT_TEMPLATE)
@@ -678,6 +822,37 @@ class SetupPage(QWidget):
         tpl_row.addWidget(btn_tpl_reset)
         tpl_layout.addLayout(tpl_row)
         layout.addWidget(tpl_group)
+
+        # ── global.ini Source (fixed height) ─────────────────────────────────
+        ini_src_group = QGroupBox("global.ini Source")
+        ini_src_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        ini_src_layout = QVBoxLayout(ini_src_group)
+        ini_src_layout.setContentsMargins(12, 16, 12, 12)
+        ini_src_layout.setSpacing(8)
+
+        ini_src_note = QLabel(
+            "URL or local file path to fetch <b>global.ini</b> from when it is missing. "
+            "Leave blank to use the built-in default."
+        )
+        ini_src_note.setObjectName("subtitle")
+        ini_src_note.setWordWrap(True)
+        ini_src_note.setTextFormat(Qt.RichText)
+        ini_src_layout.addWidget(ini_src_note)
+
+        ini_src_row = QHBoxLayout()
+        self._ini_src_edit = QLineEdit()
+        self._ini_src_edit.setPlaceholderText(DEFAULT_INI_URL)
+        ini_src_row.addWidget(self._ini_src_edit)
+        btn_ini_browse = QPushButton("Browse…")
+        btn_ini_browse.setFixedWidth(80)
+        btn_ini_browse.clicked.connect(self._browse_ini_src)
+        ini_src_row.addWidget(btn_ini_browse)
+        btn_ini_reset = QPushButton("Reset")
+        btn_ini_reset.setFixedWidth(60)
+        btn_ini_reset.clicked.connect(lambda: self._ini_src_edit.clear())
+        ini_src_row.addWidget(btn_ini_reset)
+        ini_src_layout.addLayout(ini_src_row)
+        layout.addWidget(ini_src_group)
 
         # ── Start button (fixed height) ───────────────────────────────────────
         self._btn_start = QPushButton("Start Monitoring")
@@ -694,9 +869,11 @@ class SetupPage(QWidget):
             self._set_root(Path(root))
         tpl = settings.get("template", DEFAULT_TEMPLATE)
         self._tpl_edit.setText(tpl)
+        self._ini_src_edit.setText(settings.get("ini_source", ""))
 
     def _browse_root(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Root Directory")
+        start = str(self._root_path) if self._root_path and self._root_path.exists() else ""
+        path = QFileDialog.getExistingDirectory(self, "Select Root Directory", start)
         if path:
             self._set_root(Path(path))
             s = load_settings()
@@ -712,27 +889,77 @@ class SetupPage(QWidget):
         self._env_list.clear()
         if not self._root_path:
             return
-        envs = [d for d in self._root_path.iterdir() if d.is_dir()]
-        envs.sort(key=lambda x: x.name)
-        for env in envs:
+
+        envs = sorted(
+            [d for d in self._root_path.iterdir() if d.is_dir()],
+            key=lambda x: x.name,
+        )
+        valid = [e for e in envs if is_valid_sc_env(e)]
+        invalid = [e for e in envs if not is_valid_sc_env(e)]
+
+        for env in valid:
             item = QListWidgetItem(env.name)
+            item.setData(Qt.UserRole, True)
             self._env_list.addItem(item)
+
+        if invalid:
+            sep = QListWidgetItem("── Not an SC Environment ──")
+            sep.setFlags(Qt.NoItemFlags)
+            sep.setTextAlignment(Qt.AlignCenter)
+            sep.setForeground(QColor("#585b70"))
+            sep.setData(Qt.UserRole, None)
+            self._env_list.addItem(sep)
+
+            for env in invalid:
+                item = QListWidgetItem(env.name)
+                item.setData(Qt.UserRole, False)
+                item.setForeground(QColor("#585b70"))
+                self._env_list.addItem(item)
+
         self._btn_start.setEnabled(False)
 
     def _on_env_selected(self, row: int):
         if row < 0 or not self._root_path:
             self._btn_start.setEnabled(False)
             return
-        env_name = self._env_list.item(row).text()
-        env_path = self._root_path / env_name
 
-        # Build info
+        item = self._env_list.item(row)
+        valid_env = item.data(Qt.UserRole)
+
+        if valid_env is None:  # separator row
+            self._btn_start.setEnabled(False)
+            self._env_info.setText("Select an environment to see details")
+            return
+
+        env_name = item.text()
+        env_path = self._root_path / env_name
+        lines = [f"<b>Path:</b> {env_path}"]
+
+        if not valid_env:
+            lines.append(
+                "<b>SC installation:</b> ❌ Bin64/, data/ or Data.p4k not found"
+            )
+            lines.append(
+                "<br>This folder does not look like a Star Citizen environment. "
+                "Check that you selected the correct root directory.<br>"
+                "<br>Star Citizen is typically installed at:<br>"
+                "<code>C:\\Program Files\\Roberts Space Industries\\StarCitizen\\</code>"
+            )
+            self._env_info.setText("<br>".join(lines))
+            self._btn_start.setEnabled(False)
+            return
+
         ini_path = get_ini_path(env_path)
         logbackups = env_path / "logbackups"
         game_log = env_path / "Game.log"
 
-        lines = [f"<b>Path:</b> {env_path}"]
-        lines.append(f"<b>global.ini:</b> {'✅ found' if ini_path.exists() else '❌ not found'}")
+        lines.append("<b>SC installation:</b> ✅ valid")
+
+        if ini_path.exists():
+            lines.append("<b>global.ini:</b> ✅ found")
+        else:
+            lines.append("<b>global.ini:</b> ❌ not found — will be downloaded on Start")
+
         lines.append(f"<b>Game.log:</b> {'✅ found' if game_log.exists() else '❌ not found'}")
         if logbackups.exists():
             count = len(list(logbackups.glob("*.log")))
@@ -750,13 +977,55 @@ class SetupPage(QWidget):
         row = self._env_list.currentRow()
         if row < 0 or not self._root_path:
             return
-        env_name = self._env_list.item(row).text()
+
+        item = self._env_list.item(row)
+        if not item.data(Qt.UserRole):
+            QMessageBox.warning(
+                self, "Not a valid SC environment",
+                "The selected folder does not appear to be a Star Citizen environment.\n\n"
+                "Required files/dirs: Bin64\\, data\\, Data.p4k\n\n"
+                "Star Citizen is typically installed at:\n"
+                "C:\\Program Files\\Roberts Space Industries\\StarCitizen\\\n\n"
+                "Select that folder as the root directory, then choose "
+                "an environment (e.g. LIVE or PTU) from the list.",
+            )
+            return
+
+        env_name = item.text()
+        env_path = self._root_path / env_name
         template = self._tpl_edit.text().strip() or DEFAULT_TEMPLATE
-        # Save template to settings
+        ini_src = self._ini_src_edit.text().strip()
+
         s = load_settings()
         s["template"] = template
+        s["ini_source"] = ini_src
         save_settings(s)
-        self.env_selected.emit(self._root_path / env_name, env_name, template)
+
+        ini_path = get_ini_path(env_path)
+        if not ini_path.exists():
+            source = ini_src or DEFAULT_INI_URL
+            reply = QMessageBox.question(
+                self, "Download global.ini",
+                f"global.ini is not present in this environment.\n\n"
+                f"Download from:\n{source}\n\nProceed?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            dlg = DownloadProgressDialog(source, ini_path, self)
+            if dlg.exec() != QDialog.Accepted:
+                return
+            backup_ini_if_needed(env_path)
+
+        self.env_selected.emit(env_path, env_name, template)
+
+    def _browse_ini_src(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select global.ini", "", "INI files (*.ini);;All files (*)"
+        )
+        if path:
+            self._ini_src_edit.setText(path)
 
 
 class MonitorPage(QWidget):
@@ -825,8 +1094,8 @@ class MonitorPage(QWidget):
         btn_edit = QPushButton("✏️ Edit list")
         btn_edit.setToolTip("Open blueprints.txt in system editor")
         btn_edit.clicked.connect(self._open_editor)
-        btn_reload = QPushButton("🔄 Reload")
-        btn_reload.setToolTip("Reload list from file and re-apply to INI")
+        btn_reload = QPushButton("🔁 Re-apply")
+        btn_reload.setToolTip("Reload blueprint list from file and re-apply to global.ini")
         btn_reload.clicked.connect(self._reload_blueprints)
         bp_header.addWidget(btn_edit)
         bp_header.addWidget(btn_reload)
@@ -836,9 +1105,9 @@ class MonitorPage(QWidget):
         self._bp_list = QListWidget()
         bp_layout.addWidget(self._bp_list)
 
-        btn_rescan = QPushButton("🔁 Re-apply all to global.ini")
-        btn_rescan.clicked.connect(self._rescan_ini)
-        bp_layout.addWidget(btn_rescan)
+        self._filter_edit = QLineEdit()
+        self._filter_edit.setPlaceholderText("Filter…")
+        bp_layout.addWidget(self._filter_edit)
 
         # Right: log
         log_widget = QWidget()
@@ -995,11 +1264,6 @@ class MonitorPage(QWidget):
     def _reload_blueprints(self):
         if self._worker:
             QMetaObject.invokeMethod(self._worker, "reload_blueprints", Qt.QueuedConnection)
-
-    def _rescan_ini(self):
-        if self._worker:
-            self._append_log("🔁 Re-applying all BPs to global.ini...")
-            QMetaObject.invokeMethod(self._worker, "rescan_ini", Qt.QueuedConnection)
 
 
 class MainWindow(QMainWindow):
