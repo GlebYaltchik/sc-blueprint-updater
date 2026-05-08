@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QTextEdit, QGroupBox, QSplitter, QStatusBar, QFrame, QStackedWidget,
     QSizePolicy, QScrollArea, QMessageBox, QDialog, QProgressBar, QLineEdit
 )
-from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, QMetaObject, Slot
+from PySide6.QtCore import Qt, QTimer, QThread, Signal, QObject, QMetaObject, Slot, QFileSystemWatcher
 from PySide6.QtGui import QFont, QColor, QPalette, QIcon, QTextCursor
 
 
@@ -1061,6 +1061,7 @@ class MonitorPage(QWidget):
         self._countdown_timer: QTimer | None = None
         self._seconds_left = 60
         self._all_bps: list[str] = []
+        self._bp_watcher: QFileSystemWatcher | None = None
         self._build_ui()
 
     def _build_ui(self):
@@ -1179,6 +1180,13 @@ class MonitorPage(QWidget):
         self._thread.started.connect(self._worker.initial_scan)
         self._thread.start()
 
+        # Watch blueprints.txt for external edits (e.g. user saves in editor)
+        self._bp_watcher = QFileSystemWatcher(self)
+        bp_file = str(get_blueprints_path(env_name))
+        if Path(bp_file).exists():
+            self._bp_watcher.addPath(bp_file)
+        self._bp_watcher.fileChanged.connect(self._on_blueprints_file_changed)
+
         # Poll timer — lives in main thread, invokes worker slot via queued connection
         self._seconds_left = 60
         self._poll_timer = QTimer(self)
@@ -1193,6 +1201,10 @@ class MonitorPage(QWidget):
         self._countdown_timer.start()
 
     def stop_monitoring(self):
+        if self._bp_watcher:
+            self._bp_watcher.deleteLater()
+            self._bp_watcher = None
+
         # Stop main-thread timers first (they are ours, no cross-thread issues)
         if self._poll_timer:
             self._poll_timer.stop()
@@ -1295,7 +1307,6 @@ class MonitorPage(QWidget):
     def _open_editor(self):
         p = get_blueprints_path(self._env_name)
         if not p.exists():
-            # Create empty file
             p.write_text("", encoding="utf-8")
         if platform.system() == "Windows":
             os.startfile(str(p))
@@ -1303,7 +1314,18 @@ class MonitorPage(QWidget):
             subprocess.run(["open", str(p)])
         else:
             subprocess.run(["xdg-open", str(p)])
+        # Ensure watcher tracks the file (may have just been created)
+        if self._bp_watcher and str(p) not in self._bp_watcher.files():
+            self._bp_watcher.addPath(str(p))
         self._append_log(f"📝 Opened {p.name} in system editor")
+
+    def _on_blueprints_file_changed(self, path: str):
+        # Editors that do atomic saves (write temp → rename) remove the original,
+        # so the watcher loses the path — re-add it if needed.
+        if self._bp_watcher and path not in self._bp_watcher.files():
+            self._bp_watcher.addPath(path)
+        self._append_log("📝 blueprints.txt changed — reloading…")
+        self._reload_blueprints()
 
     def _reload_blueprints(self):
         if self._worker:
