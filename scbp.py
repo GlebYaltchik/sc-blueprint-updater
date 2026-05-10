@@ -809,8 +809,8 @@ class SetupPage(QWidget):
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 30, 40, 20)
-        layout.setSpacing(16)
+        layout.setContentsMargins(20, 14, 20, 10)
+        layout.setSpacing(8)
 
         # ── Header ────────────────────────────────────────────────────────────
         title = QLabel("SC Blueprint Updater")
@@ -835,7 +835,7 @@ class SetupPage(QWidget):
         root_group = QGroupBox("Root Directory")
         root_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         root_layout = QVBoxLayout(root_group)
-        root_layout.setContentsMargins(12, 16, 12, 12)
+        root_layout.setContentsMargins(8, 8, 8, 8)
 
         root_row = QHBoxLayout()
         self._root_label = QLabel("Not selected")
@@ -853,8 +853,8 @@ class SetupPage(QWidget):
         env_group = QGroupBox("Select Environment")
         env_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         env_outer = QVBoxLayout(env_group)
-        env_outer.setContentsMargins(12, 16, 12, 12)
-        env_outer.setSpacing(8)
+        env_outer.setContentsMargins(8, 8, 8, 8)
+        env_outer.setSpacing(6)
 
         env_splitter = QSplitter(Qt.Horizontal)
         env_splitter.setChildrenCollapsible(False)
@@ -880,8 +880,8 @@ class SetupPage(QWidget):
         tpl_group = QGroupBox("Highlight Template")
         tpl_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         tpl_layout = QVBoxLayout(tpl_group)
-        tpl_layout.setContentsMargins(12, 16, 12, 12)
-        tpl_layout.setSpacing(8)
+        tpl_layout.setContentsMargins(8, 8, 8, 8)
+        tpl_layout.setSpacing(4)
 
         tpl_note = QLabel("Use <b>$NAME</b> as placeholder for the blueprint name.")
         tpl_note.setObjectName("subtitle")
@@ -904,8 +904,8 @@ class SetupPage(QWidget):
         ini_src_group = QGroupBox("global.ini Source")
         ini_src_group.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         ini_src_layout = QVBoxLayout(ini_src_group)
-        ini_src_layout.setContentsMargins(12, 16, 12, 12)
-        ini_src_layout.setSpacing(8)
+        ini_src_layout.setContentsMargins(8, 8, 8, 8)
+        ini_src_layout.setSpacing(4)
 
         ini_src_note = QLabel(
             "URL or local file path to fetch <b>global.ini</b> from when it is missing. "
@@ -1392,8 +1392,8 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SC Blueprint Updater")
-        self.setMinimumSize(800, 560)
-        self.resize(900, 620)
+        self.setMinimumSize(800, 600)
+        self.resize(900, 650)
 
         self._stack = QStackedWidget()
         self.setCentralWidget(self._stack)
