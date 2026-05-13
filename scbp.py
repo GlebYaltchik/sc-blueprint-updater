@@ -277,7 +277,7 @@ _BPPatterns = list[tuple[re.Pattern, str]]
 def compile_bp_patterns(blueprints: set) -> _BPPatterns:
     """Compile regex patterns for all BPs once, sorted longest-first."""
     return [
-        (re.compile(re.escape(bp)), bp)
+        (re.compile(re.escape(bp) + r'(?!\s[^a-z\s])'), bp)
         for bp in sorted(blueprints, key=len, reverse=True)
     ]
 
